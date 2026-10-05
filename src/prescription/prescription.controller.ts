@@ -33,6 +33,29 @@ type UploadedFile = {
     size: number;
 };
 
+const MAX_PRESCRIPTION_BYTES = Number(
+    process.env.SHAFAQ_PRESCRIPTION_MAX_BYTES ??
+        String(10 * 1024 * 1024),
+);
+
+const prescriptionUploadInterceptor = FileInterceptor(
+    'file',
+    {
+        limits: {
+            fileSize: MAX_PRESCRIPTION_BYTES,
+            files: 1,
+        },
+        fileFilter: (_request, file, callback) => {
+            callback(
+                null,
+                ['image/jpeg', 'image/png', 'image/webp'].includes(
+                    file.mimetype,
+                ),
+            );
+        },
+    },
+);
+
 @Controller('api/v1')
 export class PrescriptionController {
     constructor(
@@ -42,7 +65,7 @@ export class PrescriptionController {
     @Post('orders/:orderId/prescription')
     @UseGuards(CustomerIdentityGuard, RolesGuard)
     @Roles('CUSTOMER')
-    @UseInterceptors(FileInterceptor('file'))
+    @UseInterceptors(prescriptionUploadInterceptor)
     async upload(
         @Req() request: AuthenticatedRequest,
         @Param('orderId') orderId: string,
@@ -91,7 +114,7 @@ export class PrescriptionController {
     @Post('prescriptions/:prescriptionId/reupload')
     @UseGuards(CustomerIdentityGuard, RolesGuard)
     @Roles('CUSTOMER')
-    @UseInterceptors(FileInterceptor('file'))
+    @UseInterceptors(prescriptionUploadInterceptor)
     async reupload(
         @Req() request: AuthenticatedRequest,
         @Param('prescriptionId') prescriptionId: string,
