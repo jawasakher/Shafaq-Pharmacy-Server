@@ -1,0 +1,67 @@
+name: Shafaq Monorepo CI
+
+on:
+  push:
+    branches:
+      - migration/monorepo
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shafaq
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d shafaq"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: apps/server
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shafaq
+      SHAFAQ_PRICING_BASE_FEE: ""
+      SHAFAQ_PRICING_PER_KM: ""
+      SHAFAQ_PRICING_MAX_DISTANCE_KM: ""
+      SHAFAQ_PRICING_VERSION: v1
+      SHAFAQ_PRICING_CONFIGURATION_REF: shafaq-distance-pricing-v1
+      SHAFAQ_PRIVATE_STORAGE_PATH: ./.tmp/private
+      SHAFAQ_STORAGE_SIGNING_SECRET: ci-secret
+      SHAFAQ_PRESCRIPTION_SIGNED_URL_TTL_SECONDS: "300"
+      SHAFAQ_PRESCRIPTION_MAX_BYTES: "10485760"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/server/package-lock.json
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run build
+      - run: npm run test:e2e
+
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
