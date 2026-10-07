@@ -99,6 +99,21 @@ enum PrescriptionStatus {
   REUPLOAD_REQUIRED
 }
 
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  PROCESSING
+  REQUIRES_ACTION
+  PAID
+  FAILED
+  EXPIRED
+  UNKNOWN
+  CANCELLED
+  REFUND_PENDING
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
 model User {
   id        String   @id @default(uuid())
   phone     String   @unique
@@ -249,6 +264,7 @@ model Order {
   items        OrderItem[]
   assignments  PharmacyAssignment[]
   prescription Prescription?
+  payments     Payment[]
 
   @@index([customerId, createdAt])
   @@index([pharmacyId, status])
@@ -330,3 +346,40 @@ model PrescriptionVersion {
   @@index([uploadedByUserId])
   @@index([reviewedByUserId])
 }
+
+model Payment {
+  id                    String        @id @default(uuid())
+  orderId               String
+  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  provider              String        @default("SHAM_CASH")
+  providerTransactionId String?
+  idempotencyKey        String
+  amount                Decimal       @db.Decimal(12, 2)
+  currency              String        @db.VarChar(3) @default("SYP")
+  status                PaymentStatus @default(PENDING)
+  expiresAt             DateTime?
+  paidAt                DateTime?
+  cancelledAt           DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  events PaymentEvent[]
+
+  @@unique([provider, idempotencyKey])
+  @@index([orderId, status])
+  @@index([providerTransactionId])
+  @@index([status, createdAt])
+}
+
+model PaymentEvent {
+  id              String   @id @default(uuid())
+  paymentId       String
+  payment         Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  providerEventId String   @unique
+  eventType       String
+  payload         Json
+  createdAt       DateTime @default(now())
+
+  @@index([paymentId])
+}
+
