@@ -21,4 +21,10 @@ export class DeliveryController {
   ) {
     return this.deliveryService.getDeliveryById(userId, deliveryId);
   }
+
+  @Get(':id/location')
+  @UseGuards(CustomerIdentityGuard)
+  async getDeliveryLocation(@Param('id') deliveryId: string) {
+    return this.deliveryService.getDeliveryLocation(deliveryId);
+  }
 }

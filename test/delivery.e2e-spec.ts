@@ -74,6 +74,12 @@ describe('Delivery API (e2e)', () => {
     }
 
     if (createdDriverIds.size > 0) {
+      await prisma.driverCurrentLocation.deleteMany({
+        where: { driverId: { in: Array.from(createdDriverIds) } },
+      });
+      await prisma.driverLocationHistory.deleteMany({
+        where: { driverId: { in: Array.from(createdDriverIds) } },
+      });
       await prisma.driver.deleteMany({
         where: { id: { in: Array.from(createdDriverIds) } },
       });
@@ -297,4 +303,72 @@ describe('Delivery API (e2e)', () => {
 
     expect(secondSearchRes.status).toBe(409);
   });
+
+  it('updates driver location and allows querying delivery location with staleness check', async () => {
+    const customer = await createCustomer();
+    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
+    const driver = await createDriver();
+
+    const order = await prisma.order.create({
+      data: {
+        customerId: customer.user.id,
+        pharmacyId: pharmacy.id,
+        status: 'READY_FOR_PICKUP',
+        deliveryAddress: 'Damascus, Syria',
+        deliveryLatitude: 33.5138,
+        deliveryLongitude: 36.2765,
+        totalAmount: 5000,
+      },
+    });
+    createdOrderIds.add(order.id);
+
+    await prisma.pharmacyAssignment.create({
+      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
+    });
+
+    const searchRes = await request(app.getHttpServer())
+      .post(`/deliveries/orders/${order.id}/start-search`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-user-id', owner.id);
+
+    const deliveryId = searchRes.body.deliveryId;
+
+    const offer = await prisma.deliveryOffer.findFirst({
+      where: { deliveryId, driverId: driver.driver.id },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/driver/offers/${offer!.id}/accept`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id);
+
+    // Update location
+    const locRes = await request(app.getHttpServer())
+      .post('/driver/location')
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
+      .send({
+        deliveryId,
+        latitude: 33.5150,
+        longitude: 36.2780,
+        heading: 180,
+        speed: 25,
+      });
+
+    expect(locRes.status).toBe(201);
+    expect(locRes.body.success).toBe(true);
+
+    // Query location
+    const getLocRes = await request(app.getHttpServer())
+      .get(`/deliveries/${deliveryId}/location`)
+      .set('Authorization', `Bearer ${customer.token}`)
+      .set('x-user-id', customer.user.id);
+
+    expect(getLocRes.status).toBe(200);
+    expect(getLocRes.body.success).toBe(true);
+    expect(getLocRes.body.data.latitude).toBe(33.515);
+    expect(getLocRes.body.data.longitude).toBe(36.278);
+    expect(getLocRes.body.data.isStale).toBe(false);
+  });
 });
+

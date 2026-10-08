@@ -16,6 +16,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { UpdateLocationDto } from './dto/update-location.dto.js';
 
 @Injectable()
 export class DeliveryService {
@@ -316,6 +317,98 @@ export class DeliveryService {
         pickedUpAt: delivery.pickedUpAt,
         deliveredAt: delivery.deliveredAt,
         completedAt: delivery.completedAt,
+      },
+    };
+  }
+
+  async updateDriverLocation(driverUserId: string, dto: UpdateLocationDto) {
+    const driver = await this.prisma.driver.findUnique({
+      where: { userId: driverUserId },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Driver profile not found');
+    }
+
+    const recordedAt = new Date();
+
+    const [current] = await this.prisma.$transaction([
+      this.prisma.driverCurrentLocation.upsert({
+        where: { driverId: driver.id },
+        create: {
+          driverId: driver.id,
+          deliveryId: dto.deliveryId,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          heading: dto.heading,
+          speed: dto.speed,
+          recordedAt,
+        },
+        update: {
+          deliveryId: dto.deliveryId,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          heading: dto.heading,
+          speed: dto.speed,
+          recordedAt,
+        },
+      }),
+      this.prisma.driverLocationHistory.create({
+        data: {
+          driverId: driver.id,
+          deliveryId: dto.deliveryId,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          heading: dto.heading,
+          speed: dto.speed,
+          recordedAt,
+        },
+      }),
+    ]);
+
+    return {
+      success: true,
+      driverId: driver.id,
+      latitude: Number(current.latitude),
+      longitude: Number(current.longitude),
+      recordedAt: current.recordedAt,
+    };
+  }
+
+  async getDeliveryLocation(deliveryId: string) {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+
+    if (!delivery.driverId) {
+      return { success: true, data: null, message: 'No driver assigned yet' };
+    }
+
+    const location = await this.prisma.driverCurrentLocation.findUnique({
+      where: { driverId: delivery.driverId },
+    });
+
+    if (!location) {
+      return { success: true, data: null, message: 'No location recorded yet' };
+    }
+
+    const isStale = Date.now() - new Date(location.recordedAt).getTime() > 2 * 60 * 1000;
+
+    return {
+      success: true,
+      data: {
+        deliveryId,
+        driverId: delivery.driverId,
+        latitude: Number(location.latitude),
+        longitude: Number(location.longitude),
+        heading: location.heading ? Number(location.heading) : null,
+        speed: location.speed ? Number(location.speed) : null,
+        recordedAt: location.recordedAt,
+        isStale,
       },
     };
   }

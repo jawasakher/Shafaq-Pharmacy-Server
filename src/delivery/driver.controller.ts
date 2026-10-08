@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/
 import { InternalIdentityGuard } from '../identity/internal-identity.guard.js';
 import { DeliveryService } from './delivery.service.js';
 import { UpdateDeliveryStatusDto } from './dto/update-delivery-status.dto.js';
+import { UpdateLocationDto } from './dto/update-location.dto.js';
 
 @Controller('driver')
 @UseGuards(InternalIdentityGuard)
@@ -40,5 +41,13 @@ export class DriverController {
       deliveryId,
       dto.status,
     );
+  }
+
+  @Post('location')
+  async updateLocation(
+    @Headers('x-user-id') driverUserId: string,
+    @Body() dto: UpdateLocationDto,
+  ) {
+    return this.deliveryService.updateDriverLocation(driverUserId, dto);
   }
 }
