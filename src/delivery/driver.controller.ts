@@ -3,6 +3,8 @@ import { InternalIdentityGuard } from '../identity/internal-identity.guard.js';
 import { DeliveryService } from './delivery.service.js';
 import { UpdateDeliveryStatusDto } from './dto/update-delivery-status.dto.js';
 import { UpdateLocationDto } from './dto/update-location.dto.js';
+import { VerifyOtpDto } from './dto/verify-otp.dto.js';
+import { ConfirmCashDto } from './dto/confirm-cash.dto.js';
 
 @Controller('driver')
 @UseGuards(InternalIdentityGuard)
@@ -40,6 +42,29 @@ export class DriverController {
       driverUserId,
       deliveryId,
       dto.status,
+    );
+  }
+
+  @Post('deliveries/:id/verify-otp')
+  async verifyOtp(
+    @Headers('x-user-id') driverUserId: string,
+    @Param('id') deliveryId: string,
+    @Body() dto: VerifyOtpDto,
+  ) {
+    return this.deliveryService.verifyDeliveryOtp(driverUserId, deliveryId, dto.code);
+  }
+
+  @Post('deliveries/:id/confirm-cash')
+  async confirmCash(
+    @Headers('x-user-id') driverUserId: string,
+    @Param('id') deliveryId: string,
+    @Body() dto: ConfirmCashDto,
+  ) {
+    return this.deliveryService.confirmCash(
+      driverUserId,
+      deliveryId,
+      dto.receivedAmount,
+      dto.reason,
     );
   }
 

@@ -370,5 +370,90 @@ describe('Delivery API (e2e)', () => {
     expect(getLocRes.body.data.longitude).toBe(36.278);
     expect(getLocRes.body.data.isStale).toBe(false);
   });
+
+  it('generates, verifies OTP, and confirms cash collection completing the delivery', async () => {
+    const customer = await createCustomer();
+    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
+    const driver = await createDriver();
+
+    const order = await prisma.order.create({
+      data: {
+        customerId: customer.user.id,
+        pharmacyId: pharmacy.id,
+        status: 'READY_FOR_PICKUP',
+        deliveryAddress: 'Damascus, Syria',
+        deliveryLatitude: 33.5138,
+        deliveryLongitude: 36.2765,
+        totalAmount: 5000,
+        deliveryFee: 1500,
+        currency: 'SYP',
+      },
+    });
+    createdOrderIds.add(order.id);
+
+    await prisma.pharmacyAssignment.create({
+      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
+    });
+
+    const searchRes = await request(app.getHttpServer())
+      .post(`/deliveries/orders/${order.id}/start-search`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-user-id', owner.id);
+
+    const deliveryId = searchRes.body.deliveryId;
+
+    const offer = await prisma.deliveryOffer.findFirst({
+      where: { deliveryId, driverId: driver.driver.id },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/driver/offers/${offer!.id}/accept`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id);
+
+    // Generate OTP
+    const generateOtpRes = await request(app.getHttpServer())
+      .post(`/deliveries/${deliveryId}/generate-otp`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-user-id', owner.id);
+
+    expect(generateOtpRes.status).toBe(201);
+    const mockCode = generateOtpRes.body.mockCode;
+    expect(mockCode).toBeDefined();
+
+    // Invalid OTP Verification
+    const invalidVerifyRes = await request(app.getHttpServer())
+      .post(`/driver/deliveries/${deliveryId}/verify-otp`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
+      .send({ code: '000000' });
+
+    expect(invalidVerifyRes.status).toBe(400);
+
+    // Valid OTP Verification
+    const validVerifyRes = await request(app.getHttpServer())
+      .post(`/driver/deliveries/${deliveryId}/verify-otp`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
+      .send({ code: mockCode });
+
+    expect(validVerifyRes.status).toBe(201);
+    expect(validVerifyRes.body.status).toBe('DELIVERED');
+    expect(validVerifyRes.body.cashStatus).toBe('DUE');
+
+    // Confirm Cash
+    const confirmCashRes = await request(app.getHttpServer())
+      .post(`/driver/deliveries/${deliveryId}/confirm-cash`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
+      .send({ receivedAmount: 1500 });
+
+    expect(confirmCashRes.status).toBe(201);
+    expect(confirmCashRes.body.deliveryStatus).toBe('COMPLETED');
+    expect(confirmCashRes.body.driverAvailability).toBe('AVAILABLE');
+
+    const updatedOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updatedOrder?.status).toBe('COMPLETED');
+  });
 });
 

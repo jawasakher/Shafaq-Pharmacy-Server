@@ -18,11 +18,17 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateLocationDto } from './dto/update-location.dto.js';
 
+import { createHash, randomInt } from 'node:crypto';
+
 @Injectable()
 export class DeliveryService {
   private readonly logger = new Logger(DeliveryService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private hashOtp(code: string): string {
+    return createHash('sha256').update(code).digest('hex');
+  }
 
   async startDriverSearch(orderId: string) {
     const order = await this.prisma.order.findUnique({
@@ -412,4 +418,222 @@ export class DeliveryService {
       },
     };
   }
+
+  async generateDeliveryOtp(deliveryId: string) {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { driver: true, order: { include: { customer: true } } },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+
+    if (
+      delivery.status === DeliveryStatus.DELIVERED ||
+      delivery.status === DeliveryStatus.COMPLETED
+    ) {
+      throw new BadRequestException('Delivery is already delivered or completed');
+    }
+
+    // Revoke previous active OTPs
+    await this.prisma.deliveryOtp.updateMany({
+      where: { deliveryId, status: 'ACTIVE' },
+      data: { status: 'REVOKED', revokedAt: new Date() },
+    });
+
+    const code = randomInt(100000, 999999).toString();
+    const otpHash = this.hashOtp(code);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+
+    await this.prisma.deliveryOtp.create({
+      data: {
+        deliveryId,
+        otpHash,
+        expiresAt,
+        maxAttempts: 3,
+      },
+    });
+
+    // In a real scenario, we send this via SMS to delivery.order.customer.phone
+    // For V1 tests, we just return it or log it
+    this.logger.log(`Generated Delivery OTP for Delivery ${deliveryId}: ${code}`);
+    return { success: true, message: 'OTP generated and sent to customer', mockCode: code };
+  }
+
+  async verifyDeliveryOtp(driverUserId: string, deliveryId: string, code: string) {
+    const driver = await this.prisma.driver.findUnique({
+      where: { userId: driverUserId },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { order: true },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+
+    if (delivery.driverId !== driver.id) {
+      throw new ForbiddenException('Delivery is not assigned to this driver');
+    }
+
+    if (delivery.status === DeliveryStatus.DELIVERED || delivery.status === DeliveryStatus.COMPLETED) {
+      throw new ConflictException('Delivery is already marked as delivered');
+    }
+
+    const activeOtp = await this.prisma.deliveryOtp.findFirst({
+      where: { deliveryId, status: 'ACTIVE' },
+    });
+
+    if (!activeOtp) {
+      throw new BadRequestException('No active OTP found. Please request a new one.');
+    }
+
+    if (new Date() > activeOtp.expiresAt) {
+      await this.prisma.deliveryOtp.update({
+        where: { id: activeOtp.id },
+        data: { status: 'EXPIRED' },
+      });
+      throw new BadRequestException('OTP has expired');
+    }
+
+    const codeHash = this.hashOtp(code);
+
+    if (activeOtp.otpHash !== codeHash) {
+      const newAttempts = activeOtp.attemptCount + 1;
+      const status = newAttempts >= activeOtp.maxAttempts ? 'LOCKED' : 'ACTIVE';
+
+      await this.prisma.deliveryOtp.update({
+        where: { id: activeOtp.id },
+        data: { attemptCount: newAttempts, status },
+      });
+
+      throw new BadRequestException(`Invalid OTP code. Status: ${status}`);
+    }
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.deliveryOtp.update({
+        where: { id: activeOtp.id },
+        data: { status: 'CONSUMED', consumedAt: new Date() },
+      });
+
+      const updatedDelivery = await tx.delivery.update({
+        where: { id: delivery.id },
+        data: { status: DeliveryStatus.DELIVERED, deliveredAt: new Date() },
+      });
+
+      // Calculate cash expected
+      const expectedAmount = delivery.order.deliveryFee || 0;
+
+      const cashCollection = await tx.cashCollection.upsert({
+        where: { deliveryId: delivery.id },
+        create: {
+          deliveryId: delivery.id,
+          expectedAmount,
+          currency: delivery.order.currency,
+          status: 'DUE',
+        },
+        update: {
+          status: 'DUE',
+          expectedAmount,
+        }
+      });
+
+      // Notice: Driver remains BUSY and Order remains IN_DELIVERY until cash is confirmed.
+      return {
+        success: true,
+        deliveryId: updatedDelivery.id,
+        status: updatedDelivery.status,
+        cashStatus: cashCollection.status,
+      };
+    });
+  }
+
+  async confirmCash(driverUserId: string, deliveryId: string, receivedAmount: number, reason?: string) {
+    const driver = await this.prisma.driver.findUnique({
+      where: { userId: driverUserId },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { cashCollection: true, order: true },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+
+    if (delivery.driverId !== driver.id) {
+      throw new ForbiddenException('Delivery is not assigned to this driver');
+    }
+
+    if (delivery.status !== DeliveryStatus.DELIVERED) {
+      throw new BadRequestException(`Cannot confirm cash. Delivery status must be DELIVERED, but is ${delivery.status}`);
+    }
+
+    const cash = delivery.cashCollection;
+    if (!cash) {
+      throw new NotFoundException('Cash collection record not found for this delivery');
+    }
+
+    if (cash.status === 'RECEIVED') {
+      throw new ConflictException('Cash is already marked as received');
+    }
+
+    if (Number(receivedAmount) < Number(cash.expectedAmount)) {
+      throw new BadRequestException(`Received amount (${receivedAmount}) is less than expected amount (${cash.expectedAmount}). Please use Exception flow.`);
+    }
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.cashCollection.update({
+        where: { id: cash.id },
+        data: {
+          status: 'RECEIVED',
+          receivedAmount,
+          receivedAt: new Date(),
+          reason,
+        },
+      });
+
+      const updatedDelivery = await tx.delivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: DeliveryStatus.COMPLETED,
+          completedAt: new Date(),
+        },
+      });
+
+      await tx.order.update({
+        where: { id: delivery.orderId },
+        data: {
+          status: OrderStatus.COMPLETED,
+        },
+      });
+
+      await tx.driver.update({
+        where: { id: driver.id },
+        data: {
+          availability: DriverAvailabilityStatus.AVAILABLE, // Release the driver!
+        },
+      });
+
+      return {
+        success: true,
+        deliveryId: updatedDelivery.id,
+        deliveryStatus: updatedDelivery.status,
+        driverAvailability: DriverAvailabilityStatus.AVAILABLE,
+      };
+    });
+  }
 }
+

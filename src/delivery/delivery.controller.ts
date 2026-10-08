@@ -27,4 +27,10 @@ export class DeliveryController {
   async getDeliveryLocation(@Param('id') deliveryId: string) {
     return this.deliveryService.getDeliveryLocation(deliveryId);
   }
+
+  @Post(':id/generate-otp')
+  @UseGuards(InternalIdentityGuard)
+  async generateOtp(@Param('id') deliveryId: string) {
+    return this.deliveryService.generateDeliveryOtp(deliveryId);
+  }
 }
