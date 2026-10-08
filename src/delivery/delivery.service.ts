@@ -635,5 +635,126 @@ export class DeliveryService {
       };
     });
   }
+
+  async unableToComplete(driverUserId: string, deliveryId: string, reason: string) {
+    const driver = await this.prisma.driver.findUnique({
+      where: { userId: driverUserId },
+    });
+
+    if (!driver) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException('Delivery not found');
+    }
+
+    if (delivery.driverId !== driver.id) {
+      throw new ForbiddenException('Delivery is not assigned to this driver');
+    }
+
+    if (delivery.status === DeliveryStatus.COMPLETED || delivery.status === DeliveryStatus.EXCEPTION) {
+      throw new ConflictException(`Cannot report inability from status: ${delivery.status}`);
+    }
+
+    // Pre-Pickup: Status before PICKED_UP
+    const isPrePickup = [
+      DeliveryStatus.DRIVER_ASSIGNED,
+      DeliveryStatus.GOING_TO_PHARMACY,
+      DeliveryStatus.ARRIVED_AT_PHARMACY,
+      DeliveryStatus.HANDOVER_PENDING,
+    ].includes(delivery.status as any);
+
+    if (isPrePickup) {
+      return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        // Find and cancel current offer
+        const currentOffer = await tx.deliveryOffer.findFirst({
+          where: { deliveryId: delivery.id, driverId: driver.id, status: DeliveryOfferStatus.ACCEPTED },
+        });
+
+        if (currentOffer) {
+          await tx.deliveryOffer.update({
+            where: { id: currentOffer.id },
+            data: { status: DeliveryOfferStatus.REJECTED, failureReason: reason },
+          });
+        }
+
+        // Release driver
+        await tx.driver.update({
+          where: { id: driver.id },
+          data: { availability: DriverAvailabilityStatus.AVAILABLE },
+        });
+
+        // Search for new drivers
+        const availableDrivers = await tx.driver.findMany({
+          where: {
+            approvalStatus: DriverApprovalStatus.APPROVED,
+            availability: DriverAvailabilityStatus.AVAILABLE,
+            id: { not: driver.id }, // Exclude this driver
+          },
+        });
+
+        const updatedDelivery = await tx.delivery.update({
+          where: { id: delivery.id },
+          data: {
+            driverId: null,
+            status: DeliveryStatus.SEARCHING_FOR_DRIVER,
+          },
+        });
+
+        if (availableDrivers.length > 0) {
+          await tx.deliveryOffer.createMany({
+            data: availableDrivers.map((d) => ({
+              deliveryId: delivery.id,
+              driverId: d.id,
+              status: DeliveryOfferStatus.OFFERED,
+            })),
+          });
+        }
+
+        return {
+          success: true,
+          action: 'REASSIGNED',
+          deliveryId: updatedDelivery.id,
+          driverAvailability: DriverAvailabilityStatus.AVAILABLE,
+        };
+      });
+    }
+
+    // Post-Pickup (e.g. PICKED_UP, ON_THE_WAY, ARRIVING_SOON, OTP_PENDING, DELIVERED with unpaid cash)
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const updatedDelivery = await tx.delivery.update({
+        where: { id: delivery.id },
+        data: { status: DeliveryStatus.EXCEPTION },
+      });
+
+      await tx.order.update({
+        where: { id: delivery.orderId },
+        data: { status: OrderStatus.EXCEPTION },
+      });
+
+      const exceptionRecord = await tx.deliveryException.create({
+        data: {
+          deliveryId: delivery.id,
+          driverId: driver.id,
+          reason,
+          currentCustodian: 'DRIVER',
+          status: 'OPEN',
+        },
+      });
+
+      // Driver remains BUSY, Order becomes EXCEPTION.
+      return {
+        success: true,
+        action: 'EXCEPTION_OPENED',
+        deliveryId: updatedDelivery.id,
+        exceptionId: exceptionRecord.id,
+      };
+    });
+  }
 }
 

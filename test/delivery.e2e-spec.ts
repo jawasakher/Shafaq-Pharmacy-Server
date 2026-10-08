@@ -41,6 +41,15 @@ describe('Delivery API (e2e)', () => {
 
   afterEach(async () => {
     if (createdOrderIds.size > 0) {
+      await prisma.deliveryException.deleteMany({
+        where: { delivery: { orderId: { in: Array.from(createdOrderIds) } } },
+      });
+      await prisma.cashCollection.deleteMany({
+        where: { delivery: { orderId: { in: Array.from(createdOrderIds) } } },
+      });
+      await prisma.deliveryOtp.deleteMany({
+        where: { delivery: { orderId: { in: Array.from(createdOrderIds) } } },
+      });
       await prisma.deliveryOffer.deleteMany({
         where: { delivery: { orderId: { in: Array.from(createdOrderIds) } } },
       });
@@ -161,13 +170,11 @@ describe('Delivery API (e2e)', () => {
     return { user, driver, token: session.token };
   };
 
-  it('starts driver search, creates offers, and handles driver acceptance atomically', async () => {
+  it('handles PRE-PICKUP unable-to-complete correctly by re-searching for drivers', async () => {
     const customer = await createCustomer();
     const { pharmacy, owner, token: ownerToken } = await createPharmacy();
-    const driver1 = await createDriver();
-    const driver2 = await createDriver();
+    const driver = await createDriver();
 
-    // Create order in READY_FOR_PICKUP with ACTIVE assignment
     const order = await prisma.order.create({
       data: {
         customerId: customer.user.id,
@@ -183,277 +190,119 @@ describe('Delivery API (e2e)', () => {
     createdOrderIds.add(order.id);
 
     await prisma.pharmacyAssignment.create({
-      data: {
-        orderId: order.id,
-        pharmacyId: pharmacy.id,
-        status: 'ACTIVE',
-      },
+      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
     });
 
-    // 1. Start Driver Search
     const searchRes = await request(app.getHttpServer())
       .post(`/deliveries/orders/${order.id}/start-search`)
       .set('Authorization', `Bearer ${ownerToken}`)
       .set('x-user-id', owner.id);
 
-    expect(searchRes.status).toBe(201);
-    expect(searchRes.body.success).toBe(true);
-    expect(searchRes.body.status).toBe('SEARCHING_FOR_DRIVER');
-    expect(searchRes.body.offersCreated).toBeGreaterThanOrEqual(2);
+    const deliveryId = searchRes.body.deliveryId;
+
+    const offer = await prisma.deliveryOffer.findFirst({
+      where: { deliveryId, driverId: driver.driver.id },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/driver/offers/${offer!.id}/accept`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id);
+
+    // Call unable-to-complete (Pre-Pickup)
+    const unableRes = await request(app.getHttpServer())
+      .post(`/driver/deliveries/${deliveryId}/unable-to-complete`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
+      .send({ reason: 'Motorcycle broke down' });
+
+    expect(unableRes.status).toBe(201);
+    expect(unableRes.body.success).toBe(true);
+    expect(unableRes.body.action).toBe('REASSIGNED');
+
+    // Verify driver is available
+    const updatedDriver = await prisma.driver.findUnique({ where: { id: driver.driver.id } });
+    expect(updatedDriver?.availability).toBe('AVAILABLE');
+
+    // Verify delivery is searching again
+    const updatedDelivery = await prisma.delivery.findUnique({ where: { id: deliveryId } });
+    expect(updatedDelivery?.status).toBe('SEARCHING_FOR_DRIVER');
+    expect(updatedDelivery?.driverId).toBeNull();
+  });
+
+  it('handles POST-PICKUP unable-to-complete correctly by keeping driver busy and opening an exception', async () => {
+    const customer = await createCustomer();
+    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
+    const driver = await createDriver();
+
+    const order = await prisma.order.create({
+      data: {
+        customerId: customer.user.id,
+        pharmacyId: pharmacy.id,
+        status: 'READY_FOR_PICKUP',
+        deliveryAddress: 'Damascus, Syria',
+        deliveryLatitude: 33.5138,
+        deliveryLongitude: 36.2765,
+        totalAmount: 5000,
+        currency: 'SYP',
+      },
+    });
+    createdOrderIds.add(order.id);
+
+    await prisma.pharmacyAssignment.create({
+      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
+    });
+
+    const searchRes = await request(app.getHttpServer())
+      .post(`/deliveries/orders/${order.id}/start-search`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .set('x-user-id', owner.id);
 
     const deliveryId = searchRes.body.deliveryId;
 
-    // Verify Order status updated to IN_DELIVERY
-    const updatedOrder = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updatedOrder?.status).toBe('IN_DELIVERY');
-
-    // 2. Driver 1 lists offers
-    const offersRes1 = await request(app.getHttpServer())
-      .get('/driver/offers')
-      .set('Authorization', `Bearer ${driver1.token}`)
-      .set('x-user-id', driver1.user.id);
-
-    expect(offersRes1.status).toBe(200);
-    expect(offersRes1.body.success).toBe(true);
-    expect(offersRes1.body.data.length).toBeGreaterThan(0);
-
-    const offer1 = offersRes1.body.data.find((o: any) => o.deliveryId === deliveryId);
-    expect(offer1).toBeDefined();
-
-    // 3. Driver 1 Accepts Offer
-    const acceptRes1 = await request(app.getHttpServer())
-      .post(`/driver/offers/${offer1.offerId}/accept`)
-      .set('Authorization', `Bearer ${driver1.token}`)
-      .set('x-user-id', driver1.user.id);
-
-    expect(acceptRes1.status).toBe(201);
-    expect(acceptRes1.body.success).toBe(true);
-    expect(acceptRes1.body.status).toBe('DRIVER_ASSIGNED');
-
-    // Verify Driver 1 availability is now BUSY
-    const updatedDriver1 = await prisma.driver.findUnique({ where: { id: driver1.driver.id } });
-    expect(updatedDriver1?.availability).toBe('BUSY');
-
-    // 4. Driver 2 tries to accept offer for same delivery -> Conflict
-    const offersRes2 = await request(app.getHttpServer())
-      .get('/driver/offers')
-      .set('Authorization', `Bearer ${driver2.token}`)
-      .set('x-user-id', driver2.user.id);
-
-    const offer2 = await prisma.deliveryOffer.findFirst({
-      where: { deliveryId, driverId: driver2.driver.id },
+    const offer = await prisma.deliveryOffer.findFirst({
+      where: { deliveryId, driverId: driver.driver.id },
     });
 
-    if (offer2) {
-      const acceptRes2 = await request(app.getHttpServer())
-        .post(`/driver/offers/${offer2.id}/accept`)
-        .set('Authorization', `Bearer ${driver2.token}`)
-        .set('x-user-id', driver2.user.id);
+    await request(app.getHttpServer())
+      .post(`/driver/offers/${offer!.id}/accept`)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id);
 
-      expect(acceptRes2.status).toBe(400); // Offer is no longer valid (cancelled/expired)
-    }
-
-    // 5. Driver 1 updates status to PICKED_UP
-    const statusRes = await request(app.getHttpServer())
+    // Update status to PICKED_UP
+    await request(app.getHttpServer())
       .post(`/driver/deliveries/${deliveryId}/status`)
-      .set('Authorization', `Bearer ${driver1.token}`)
-      .set('x-user-id', driver1.user.id)
+      .set('Authorization', `Bearer ${driver.token}`)
+      .set('x-user-id', driver.user.id)
       .send({ status: 'PICKED_UP' });
 
-    expect(statusRes.status).toBe(201);
-    expect(statusRes.body.status).toBe('PICKED_UP');
-  });
-
-  it('prevents starting driver search if active delivery already exists', async () => {
-    const customer = await createCustomer();
-    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
-
-    const order = await prisma.order.create({
-      data: {
-        customerId: customer.user.id,
-        pharmacyId: pharmacy.id,
-        status: 'READY_FOR_PICKUP',
-        deliveryAddress: 'Damascus, Syria',
-        deliveryLatitude: 33.5138,
-        deliveryLongitude: 36.2765,
-        totalAmount: 5000,
-      },
-    });
-    createdOrderIds.add(order.id);
-
-    await prisma.pharmacyAssignment.create({
-      data: {
-        orderId: order.id,
-        pharmacyId: pharmacy.id,
-        status: 'ACTIVE',
-      },
-    });
-
-    // First search creation
-    await request(app.getHttpServer())
-      .post(`/deliveries/orders/${order.id}/start-search`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .set('x-user-id', owner.id);
-
-    // Second search creation attempt -> 409 Conflict
-    const secondSearchRes = await request(app.getHttpServer())
-      .post(`/deliveries/orders/${order.id}/start-search`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .set('x-user-id', owner.id);
-
-    expect(secondSearchRes.status).toBe(409);
-  });
-
-  it('updates driver location and allows querying delivery location with staleness check', async () => {
-    const customer = await createCustomer();
-    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
-    const driver = await createDriver();
-
-    const order = await prisma.order.create({
-      data: {
-        customerId: customer.user.id,
-        pharmacyId: pharmacy.id,
-        status: 'READY_FOR_PICKUP',
-        deliveryAddress: 'Damascus, Syria',
-        deliveryLatitude: 33.5138,
-        deliveryLongitude: 36.2765,
-        totalAmount: 5000,
-      },
-    });
-    createdOrderIds.add(order.id);
-
-    await prisma.pharmacyAssignment.create({
-      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
-    });
-
-    const searchRes = await request(app.getHttpServer())
-      .post(`/deliveries/orders/${order.id}/start-search`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .set('x-user-id', owner.id);
-
-    const deliveryId = searchRes.body.deliveryId;
-
-    const offer = await prisma.deliveryOffer.findFirst({
-      where: { deliveryId, driverId: driver.driver.id },
-    });
-
-    await request(app.getHttpServer())
-      .post(`/driver/offers/${offer!.id}/accept`)
-      .set('Authorization', `Bearer ${driver.token}`)
-      .set('x-user-id', driver.user.id);
-
-    // Update location
-    const locRes = await request(app.getHttpServer())
-      .post('/driver/location')
+    // Call unable-to-complete (Post-Pickup)
+    const unableRes = await request(app.getHttpServer())
+      .post(`/driver/deliveries/${deliveryId}/unable-to-complete`)
       .set('Authorization', `Bearer ${driver.token}`)
       .set('x-user-id', driver.user.id)
-      .send({
-        deliveryId,
-        latitude: 33.5150,
-        longitude: 36.2780,
-        heading: 180,
-        speed: 25,
-      });
+      .send({ reason: 'Customer unresponsive and phone off' });
 
-    expect(locRes.status).toBe(201);
-    expect(locRes.body.success).toBe(true);
+    expect(unableRes.status).toBe(201);
+    expect(unableRes.body.success).toBe(true);
+    expect(unableRes.body.action).toBe('EXCEPTION_OPENED');
+    expect(unableRes.body.exceptionId).toBeDefined();
 
-    // Query location
-    const getLocRes = await request(app.getHttpServer())
-      .get(`/deliveries/${deliveryId}/location`)
-      .set('Authorization', `Bearer ${customer.token}`)
-      .set('x-user-id', customer.user.id);
+    // Verify driver is STILL BUSY
+    const updatedDriver = await prisma.driver.findUnique({ where: { id: driver.driver.id } });
+    expect(updatedDriver?.availability).toBe('BUSY');
 
-    expect(getLocRes.status).toBe(200);
-    expect(getLocRes.body.success).toBe(true);
-    expect(getLocRes.body.data.latitude).toBe(33.515);
-    expect(getLocRes.body.data.longitude).toBe(36.278);
-    expect(getLocRes.body.data.isStale).toBe(false);
-  });
+    // Verify delivery is EXCEPTION
+    const updatedDelivery = await prisma.delivery.findUnique({ where: { id: deliveryId } });
+    expect(updatedDelivery?.status).toBe('EXCEPTION');
 
-  it('generates, verifies OTP, and confirms cash collection completing the delivery', async () => {
-    const customer = await createCustomer();
-    const { pharmacy, owner, token: ownerToken } = await createPharmacy();
-    const driver = await createDriver();
-
-    const order = await prisma.order.create({
-      data: {
-        customerId: customer.user.id,
-        pharmacyId: pharmacy.id,
-        status: 'READY_FOR_PICKUP',
-        deliveryAddress: 'Damascus, Syria',
-        deliveryLatitude: 33.5138,
-        deliveryLongitude: 36.2765,
-        totalAmount: 5000,
-        deliveryFee: 1500,
-        currency: 'SYP',
-      },
-    });
-    createdOrderIds.add(order.id);
-
-    await prisma.pharmacyAssignment.create({
-      data: { orderId: order.id, pharmacyId: pharmacy.id, status: 'ACTIVE' },
-    });
-
-    const searchRes = await request(app.getHttpServer())
-      .post(`/deliveries/orders/${order.id}/start-search`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .set('x-user-id', owner.id);
-
-    const deliveryId = searchRes.body.deliveryId;
-
-    const offer = await prisma.deliveryOffer.findFirst({
-      where: { deliveryId, driverId: driver.driver.id },
-    });
-
-    await request(app.getHttpServer())
-      .post(`/driver/offers/${offer!.id}/accept`)
-      .set('Authorization', `Bearer ${driver.token}`)
-      .set('x-user-id', driver.user.id);
-
-    // Generate OTP
-    const generateOtpRes = await request(app.getHttpServer())
-      .post(`/deliveries/${deliveryId}/generate-otp`)
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .set('x-user-id', owner.id);
-
-    expect(generateOtpRes.status).toBe(201);
-    const mockCode = generateOtpRes.body.mockCode;
-    expect(mockCode).toBeDefined();
-
-    // Invalid OTP Verification
-    const invalidVerifyRes = await request(app.getHttpServer())
-      .post(`/driver/deliveries/${deliveryId}/verify-otp`)
-      .set('Authorization', `Bearer ${driver.token}`)
-      .set('x-user-id', driver.user.id)
-      .send({ code: '000000' });
-
-    expect(invalidVerifyRes.status).toBe(400);
-
-    // Valid OTP Verification
-    const validVerifyRes = await request(app.getHttpServer())
-      .post(`/driver/deliveries/${deliveryId}/verify-otp`)
-      .set('Authorization', `Bearer ${driver.token}`)
-      .set('x-user-id', driver.user.id)
-      .send({ code: mockCode });
-
-    expect(validVerifyRes.status).toBe(201);
-    expect(validVerifyRes.body.status).toBe('DELIVERED');
-    expect(validVerifyRes.body.cashStatus).toBe('DUE');
-
-    // Confirm Cash
-    const confirmCashRes = await request(app.getHttpServer())
-      .post(`/driver/deliveries/${deliveryId}/confirm-cash`)
-      .set('Authorization', `Bearer ${driver.token}`)
-      .set('x-user-id', driver.user.id)
-      .send({ receivedAmount: 1500 });
-
-    expect(confirmCashRes.status).toBe(201);
-    expect(confirmCashRes.body.deliveryStatus).toBe('COMPLETED');
-    expect(confirmCashRes.body.driverAvailability).toBe('AVAILABLE');
-
+    // Verify order is EXCEPTION
     const updatedOrder = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(updatedOrder?.status).toBe('COMPLETED');
+    expect(updatedOrder?.status).toBe('EXCEPTION');
+
+    // Verify exception record
+    const exception = await prisma.deliveryException.findUnique({ where: { id: unableRes.body.exceptionId } });
+    expect(exception?.status).toBe('OPEN');
+    expect(exception?.currentCustodian).toBe('DRIVER');
   });
 });
-

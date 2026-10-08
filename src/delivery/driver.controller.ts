@@ -75,4 +75,13 @@ export class DriverController {
   ) {
     return this.deliveryService.updateDriverLocation(driverUserId, dto);
   }
+
+  @Post('deliveries/:id/unable-to-complete')
+  async unableToComplete(
+    @Headers('x-user-id') driverUserId: string,
+    @Param('id') deliveryId: string,
+    @Body('reason') reason: string,
+  ) {
+    return this.deliveryService.unableToComplete(driverUserId, deliveryId, reason);
+  }
 }
