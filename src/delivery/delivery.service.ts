@@ -98,6 +98,15 @@ export class DeliveryService {
         });
       }
 
+      await tx.deliveryStateHistory.create({
+        data: {
+          deliveryId: delivery.id,
+          newState: DeliveryStatus.SEARCHING_FOR_DRIVER,
+          actorId: 'SYSTEM',
+          reason: 'Initial search started',
+        }
+      });
+
       return {
         success: true,
         deliveryId: delivery.id,
@@ -182,6 +191,16 @@ export class DeliveryService {
         data: {
           availability: DriverAvailabilityStatus.BUSY,
         },
+      });
+
+      await tx.deliveryStateHistory.create({
+        data: {
+          deliveryId: delivery.id,
+          previousState: delivery.status,
+          newState: DeliveryStatus.DRIVER_ASSIGNED,
+          actorId: driver.userId,
+          reason: 'Driver accepted offer',
+        }
       });
 
       return {
@@ -294,6 +313,16 @@ export class DeliveryService {
         deliveredAt: newStatus === DeliveryStatus.DELIVERED ? new Date() : delivery.deliveredAt,
         completedAt: newStatus === DeliveryStatus.COMPLETED ? new Date() : delivery.completedAt,
       },
+    });
+
+    await this.prisma.deliveryStateHistory.create({
+      data: {
+        deliveryId: delivery.id,
+        previousState: delivery.status,
+        newState: newStatus,
+        actorId: driverUserId,
+        reason: 'Driver manual status update',
+      }
     });
 
     return { success: true, deliveryId: updated.id, status: updated.status };
@@ -528,6 +557,16 @@ export class DeliveryService {
         data: { status: DeliveryStatus.DELIVERED, deliveredAt: new Date() },
       });
 
+      await tx.deliveryStateHistory.create({
+        data: {
+          deliveryId: delivery.id,
+          previousState: delivery.status,
+          newState: DeliveryStatus.DELIVERED,
+          actorId: driverUserId,
+          reason: 'Delivery OTP verified',
+        }
+      });
+
       // Calculate cash expected
       const expectedAmount = delivery.order.deliveryFee || 0;
 
@@ -613,11 +652,31 @@ export class DeliveryService {
         },
       });
 
+      await tx.deliveryStateHistory.create({
+        data: {
+          deliveryId: delivery.id,
+          previousState: delivery.status,
+          newState: DeliveryStatus.COMPLETED,
+          actorId: driverUserId,
+          reason: 'Cash collection confirmed',
+        }
+      });
+
       await tx.order.update({
         where: { id: delivery.orderId },
         data: {
           status: OrderStatus.COMPLETED,
         },
+      });
+
+      await tx.orderStateHistory.create({
+        data: {
+          orderId: delivery.orderId,
+          previousState: delivery.order.status,
+          newState: OrderStatus.COMPLETED,
+          actorId: driverUserId,
+          reason: 'Delivery completed successfully',
+        }
       });
 
       await tx.driver.update({
@@ -706,6 +765,16 @@ export class DeliveryService {
           },
         });
 
+        await tx.deliveryStateHistory.create({
+          data: {
+            deliveryId: delivery.id,
+            previousState: delivery.status,
+            newState: DeliveryStatus.SEARCHING_FOR_DRIVER,
+            actorId: driverUserId,
+            reason: `Driver pre-pickup failure: ${reason}`,
+          }
+        });
+
         if (availableDrivers.length > 0) {
           await tx.deliveryOffer.createMany({
             data: availableDrivers.map((d) => ({
@@ -732,9 +801,31 @@ export class DeliveryService {
         data: { status: DeliveryStatus.EXCEPTION },
       });
 
+      await tx.deliveryStateHistory.create({
+        data: {
+          deliveryId: delivery.id,
+          previousState: delivery.status,
+          newState: DeliveryStatus.EXCEPTION,
+          actorId: driverUserId,
+          reason: `Driver post-pickup failure: ${reason}`,
+        }
+      });
+
+      const order = await tx.order.findUnique({ where: { id: delivery.orderId } });
+
       await tx.order.update({
         where: { id: delivery.orderId },
         data: { status: OrderStatus.EXCEPTION },
+      });
+
+      await tx.orderStateHistory.create({
+        data: {
+          orderId: delivery.orderId,
+          previousState: order?.status || 'UNKNOWN',
+          newState: OrderStatus.EXCEPTION,
+          actorId: driverUserId,
+          reason: `Delivery failure triggered exception`,
+        }
       });
 
       const exceptionRecord = await tx.deliveryException.create({

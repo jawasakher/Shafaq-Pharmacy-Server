@@ -331,6 +331,7 @@ model Order {
   prescription Prescription?
   payments     Payment[]
   deliveries   Delivery[]
+  stateHistory OrderStateHistory[]
 
   @@index([customerId, createdAt])
   @@index([pharmacyId, status])
@@ -475,6 +476,7 @@ model Delivery {
   otps             DeliveryOtp[]
   cashCollection   CashCollection?
   exception        DeliveryException?
+  stateHistory     DeliveryStateHistory[]
 
   @@index([orderId])
   @@index([driverId, status])
@@ -592,3 +594,34 @@ model DeliveryException {
   @@index([deliveryId])
   @@index([driverId])
 }
+
+model OrderStateHistory {
+  id            String      @id @default(uuid())
+  orderId       String
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  previousState String?
+  newState      OrderStatus
+  actorId       String?
+  reason        String?
+  metadata      Json?
+  timestamp     DateTime    @default(now())
+
+  @@index([orderId, timestamp])
+  @@index([timestamp])
+}
+
+model DeliveryStateHistory {
+  id            String         @id @default(uuid())
+  deliveryId    String
+  delivery      Delivery       @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  previousState String?
+  newState      DeliveryStatus
+  actorId       String?
+  reason        String?
+  metadata      Json?
+  timestamp     DateTime       @default(now())
+
+  @@index([deliveryId, timestamp])
+  @@index([timestamp])
+}
+
