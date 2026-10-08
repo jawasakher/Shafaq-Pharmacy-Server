@@ -154,39 +154,47 @@ export class PaymentService {
 
     const newStatus = verified.status || PaymentStatus.PROCESSING;
 
-    await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      await tx.paymentEvent.create({
-        data: {
-          paymentId: payment.id,
-          providerEventId: verified.providerEventId!,
-          eventType: verified.status || 'STATUS_UPDATE',
-          payload: verified.payload || {},
-        },
-      });
-
-      if (payment.status === PaymentStatus.PAID) {
-        this.logger.log(`Payment ${payment.id} is already PAID. Ignoring backward transition.`);
-        return;
-      }
-
-      const isPaidNow = newStatus === PaymentStatus.PAID;
-
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: newStatus,
-          providerTransactionId: verified.providerTransactionId || payment.providerTransactionId,
-          paidAt: isPaidNow ? new Date() : payment.paidAt,
-        },
-      });
-
-      if (isPaidNow && payment.order.status !== OrderStatus.PAID) {
-        await tx.order.update({
-          where: { id: payment.orderId },
-          data: { status: OrderStatus.PAID },
+    try {
+      await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        await tx.paymentEvent.create({
+          data: {
+            paymentId: payment.id,
+            providerEventId: verified.providerEventId!,
+            eventType: verified.status || 'STATUS_UPDATE',
+            payload: verified.payload || {},
+          },
         });
+
+        if (payment.status === PaymentStatus.PAID) {
+          this.logger.log(`Payment ${payment.id} is already PAID. Ignoring backward transition.`);
+          return;
+        }
+
+        const isPaidNow = newStatus === PaymentStatus.PAID;
+
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: {
+            status: newStatus,
+            providerTransactionId: verified.providerTransactionId || payment.providerTransactionId,
+            paidAt: isPaidNow ? new Date() : payment.paidAt,
+          },
+        });
+
+        if (isPaidNow && payment.order.status !== OrderStatus.PAID) {
+          await tx.order.update({
+            where: { id: payment.orderId },
+            data: { status: OrderStatus.PAID },
+          });
+        }
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        this.logger.log(`Duplicate webhook event handled safely via unique constraint: ${verified.providerEventId}`);
+        return { success: true, processed: false, reason: 'DUPLICATE_EVENT' };
       }
-    });
+      throw error;
+    }
 
     return { success: true, processed: true, paymentId: payment.id, newStatus };
   }

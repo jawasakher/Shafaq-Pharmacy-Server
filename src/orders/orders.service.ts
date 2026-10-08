@@ -144,6 +144,8 @@ export class OrdersService {
                 actorUserId,
             );
 
+            await tx.$executeRaw`SELECT id FROM "Order" WHERE id = ${assignment.orderId} FOR UPDATE`;
+
             const order =
                 await tx.order.findUnique({
                     where: { id: assignment.orderId },
@@ -157,6 +159,21 @@ export class OrdersService {
                 throw new NotFoundException(
                     'Order not found',
                 );
+            }
+
+            if (order.status === 'PENDING') {
+                const activeCount = await tx.pharmacyAssignment.count({
+                    where: {
+                        orderId: assignment.orderId,
+                        status: 'ACTIVE',
+                    },
+                });
+
+                if (activeCount > 0) {
+                    throw new ConflictException(
+                        'An active pharmacy assignment already exists for this order',
+                    );
+                }
             }
 
             if (
