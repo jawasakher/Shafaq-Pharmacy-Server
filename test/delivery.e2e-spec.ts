@@ -166,6 +166,15 @@ describe('Delivery API (e2e)', () => {
     });
     createdDriverIds.add(driver.id);
 
+    await prisma.driverCurrentLocation.create({
+      data: {
+        driverId: driver.id,
+        latitude: 33.5138,
+        longitude: 36.2765,
+        recordedAt: new Date(),
+      },
+    });
+
     const session = await authSessionService.createInternalSession(user.id);
     return { user, driver, token: session.token };
   };

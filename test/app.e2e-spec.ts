@@ -26,7 +26,7 @@ describe('AppController (e2e)', () => {
     return request(app.getHttpServer())
       .get('/')
       .expect(200)
-      .expect('Hello World!');
+      .expect('Shafaq Pharmacy & Consultation Backend Server (SRS v1.2)');
   });
 
   afterEach(async () => {
