@@ -5,6 +5,7 @@ import { AppService } from './app.service.js';
 import { IdentityModule } from './identity/identity.module.js';
 import { OrdersModule } from './orders/orders.module.js';
 import { PharmacyModule } from './pharmacy/pharmacy.module.js';
+import { DeliveryModule } from './delivery/delivery.module.js';
 import { PaymentModule } from './payment/payment.module.js';
 import { PrescriptionModule } from './prescription/prescription.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -17,6 +18,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     OrdersModule,
     PrescriptionModule,
     PaymentModule,
+    DeliveryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
