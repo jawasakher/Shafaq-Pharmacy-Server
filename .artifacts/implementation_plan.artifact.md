@@ -1,33 +1,27 @@
-# خطة تنفيذ المرحلة 16: النشر، الحاويات، وتوثيق الواجهات (Phase 16: Dockerization, Swagger & Health Checks)
+# خطة تنفيذ المرحلة 17: توثيق التكامل والاعتماد النهائي (Phase 17: Integration Documentation & Final SRS Sign-Off)
 
-تستهدف هذه المرحلة تجهيز الخادم للإنتاج (`Production Readiness`) من خلال:
-1. إعداد حاويات Docker و Docker Compose (`Dockerfile`, `docker-compose.yml`).
-2. توثيق واجهات الـ API باستخدام Swagger / OpenAPI (`@nestjs/swagger`).
-3. إضافة فحص الصحة التشغيلي (`Health Check` endpoint).
+وفقاً لخطة الجدول الزمني لإكمال المنصة طبقاً لـ **SRS v1.2**، تمثل هذه المرحلة الخطوة الأخيرة لتتويج المشروع بتوثيق أدلة التكامل (`Integration Guide`) واعتماد المطابقة النهائية لجميع متطلبات النظام.
 
 ## Proposed Changes
 
-### 1. توثيق Swagger / OpenAPI
-#### [MODIFY] [main.ts](file:///C:/Users/JAWA/WebstormProjects/untitled/shafaq-server/src/main.ts)
-- إعداد `@nestjs/swagger` لتوليد وثائق API تلقائية على المسار `/api/docs`.
+### 1. توثيق دليل التكامل (Integration Guide)
+#### [NEW] `shafaq-server/docs/INTEGRATION_GUIDE.md`
+- دليل شامل للمطورين الواجهة الأمامية (Mobile/Web) يغطي:
+  - دورة حياة المصادقة (OTP & Sessions).
+  - دورة حياة الطلبات (Orders, Quoting, Customer Confirmation).
+  - دورة حياة التوصيل وسلسلة الحيازة (Driver Offers, GPS, OTP, Exceptions).
+  - الاستشارات والمحادثات الخاصة.
+  - استدعاءات لوحة الأدمن والإشعارات.
 
-### 2. فحص الصحة (Health Check)
-#### [MODIFY] [app.controller.ts](file:///C:/Users/JAWA/WebstormProjects/untitled/shafaq-server/src/app.controller.ts) & [app.service.ts](file:///C:/Users/JAWA/WebstormProjects/untitled/shafaq-server/src/app.service.ts)
-- إضافة مسار `GET /api/v1/health` للتحقق من سلامة الخادم وقاعدة البيانات.
-
-### 3. إعداد Docker و Docker Compose
-#### [NEW] `shafaq-server/Dockerfile`
-- بناء متعدد المراحل (Multi-stage build) لـ NestJS للإنتاج.
-
-#### [NEW] `shafaq-server/docker-compose.yml`
-- تشغيل قاعدة بيانات PostgreSQL وخادم الـ Backend معاً.
+### 2. الفحص النهائي وتأكيد الجودة
+- تشغيل كافة اختبارات الـ E2E (63 اختبار) وبناء المشروع (`nest build`).
 
 ---
 
 ## Verification Plan
 
 ### Automated Tests
-- تشغيل اختبارات E2E والتأكد من نجاحها بالكامل:
+- تشغيل:
   `npm --prefix shafaq-server run test:e2e`
-- التحقق من البناء:
+- تشغيل البناء:
   `npm --prefix shafaq-server run build`

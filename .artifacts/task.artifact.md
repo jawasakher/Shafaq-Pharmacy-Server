@@ -1,8 +1,6 @@
-# المهام المنفذة للمرحلة 16 (Phase 16: Dockerization, Swagger & Health Checks)
+# المهام المنفذة للمرحلة 17 (Phase 17: Integration Documentation & Final SRS Sign-Off)
 
-- `[x]` إعداد توثيق Swagger / OpenAPI في `main.ts` (`/api/docs`)
-- `[x]` إضافة مسار فحص الصحة التشغيلي `/api/v1/health` في `AppController` و `AppService`
-- `[x]` إنشاء `Dockerfile` للإنتاج (Multi-stage build)
-- `[x]` إنشاء `docker-compose.yml` لتشغيل قاعدة بيانات PostgreSQL وخادم الـ Backend معاً
-- `[x]` تشغيل اختبارات E2E (جميع الـ 63 اختبار نجح بنسبة 100%) وتأكيد نجاح البناء `nest build`
-- `[x]` رفع التعديلات لمستودع Git (`shafaq-server`)
+- `[/]` إنشاء دليل التكامل الشامل `docs/INTEGRATION_GUIDE.md`
+- `[ ]` التحقق من عمل جميع اختبارات الـ E2E وبناء الخادم بنجاح تام
+- `[ ]` توثيق الاعتماد النهائي للمنصة وفق SRS v1.2
+- `[ ]` رفع التعديلات لمستودع Git
